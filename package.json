@@ -1,0 +1,6 @@
+{
+  "name": "talentmatch",
+  "private": true,
+  "scripts": {"dev":"concurrently -k -n api,web -c blue,green \"npm:dev:api\" \"npm:dev:web\"", "dev:api":"npm --prefix server run dev", "dev:web":"npm --prefix client run dev -- --host 0.0.0.0", "build":"npm --prefix server run build && npm --prefix client run build", "test":"npm --prefix server test && npm --prefix client test", "db:migrate":"npm --prefix server run migrate", "db:seed":"npm --prefix server run seed"},
+  "devDependencies":{"concurrently":"^9.1.2"}
+}

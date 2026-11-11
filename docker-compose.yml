@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: recruitment_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data", "./server/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d recruitment_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+  api:
+    build: ./server
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      CLIENT_URL: http://localhost:5173
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/recruitment_db
+      JWT_SECRET: change-this-secret-before-deploying
+      UPLOAD_DIR: /app/uploads
+      REDIS_URL: redis://redis:6379
+    ports: ["4000:4000"]
+    volumes: ["uploads:/app/uploads"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+  web:
+    build: ./client
+    ports: ["5173:80"]
+    depends_on: [api]
+volumes:
+  postgres_data:
+  uploads:

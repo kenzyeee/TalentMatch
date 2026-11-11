@@ -1,0 +1,3 @@
+export const API=import.meta.env.VITE_API_URL||'';
+export type User={id:string;email:string;role:'CANDIDATE'|'RECRUITER'|'ADMIN';profileId:string;firstName?:string;lastName?:string;location?:string;companyName?:string};
+export async function request<T=any>(path:string,options:RequestInit={},token?:string):Promise<T>{const headers=new Headers(options.headers);if(token)headers.set('Authorization',`Bearer ${token}`);if(options.body&&!(options.body instanceof FormData))headers.set('Content-Type','application/json');const r=await fetch(`${API}/api${path}`,{...options,headers});const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||'Request failed');return data as T;}
