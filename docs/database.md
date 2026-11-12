@@ -4,7 +4,7 @@
 
 The supplied 11 relations remain the center of the schema: `users`, `candidates`, `recruiters`, `resumes`, `jobs`, `skills`, `resume_skills`, `job_skills`, `applications`, `resume_matches`, and `interviews`. Foreign-key direction and cardinalities follow the PDF: one user to one role profile; profiles to many resumes/jobs; skills linked through join tables; candidate/job via applications; resume/job via matches; and applications to interviews.
 
-Identifiers remain `varchar(50)` for compatibility with the source design, with UUID text defaults. Original camel-case field names (`userId`, `fileName`, `matchingScore`, etc.) are retained. `citext` makes email uniqueness case-insensitive. All schema DDL is in `server/db/schema.sql` and can be rerun safely for the initial migration.
+Identifiers remain `varchar(50)` for compatibility with the source design, with UUID text defaults. Original camel-case field names (`userId`, `fileName`, `matchingScore`, etc.) are retained. `citext` makes email uniqueness case-insensitive. `pgvector` stores a 384-value embedding on resumes and jobs, and `resume_matches.semanticScore` stores the semantic component of each candidate/job score. All schema DDL is in `server/db/schema.sql` and can be rerun safely.
 
 ## Additions and rationale
 
@@ -13,11 +13,17 @@ Identifiers remain `varchar(50)` for compatibility with the source design, with 
 - `resumes.extractedText`, `isDefault`: parsed resume source and active version.
 - Job salary range and workplace type, plus range check.
 - `skills.normalizedName` for taxonomy normalization.
-- `resume_matches.scoreBreakdown jsonb`: auditable versioned match inputs; original match arrays become `text[]` to retain lists structurally.
+- `resume_matches.scoreBreakdown jsonb`: auditable versioned semantic/skill match inputs; original match arrays become `text[]` to retain lists structurally.
 - Interview meeting link and creation time.
 - Explicit enum-like `CHECK` constraints and nonnegative/score range checks.
 
-No document database is needed: JSONB is limited to the flexible explanation payload in PostgreSQL; the rest remains normalized and relational.
+No separate vector service is needed: pgvector stores and searches the embeddings alongside the relational records. JSONB is limited to the flexible explanation payload; the rest remains normalized and relational.
+
+## Semantic matching
+
+The API uses the 384-dimensional `Xenova/all-MiniLM-L6-v2` Sentence Transformers model. It embeds extracted resume text and each job title plus description. PostgreSQL stores vectors using `vector(384)` and an HNSW index with `vector_cosine_ops`. The candidate match query uses cosine distance (`<=>`) to rank semantically related roles, including descriptions that use different wording. The final score combines semantic similarity (70%) with the existing weighted skill overlap (30%). Required skills count double within the skill component. The model name, metric, weights, sub-scores, and skill explanation are stored in `resume_matches.scoreBreakdown`.
+
+The model files are fetched on first use and cached at `TRANSFORMERS_CACHE` (Docker uses a persistent `embedding_models` volume). The first resume upload or job creation therefore takes longer while the model loads.
 
 ## Constraints and transaction examples
 
@@ -97,6 +103,12 @@ WHERE "jobId"='job-id' ORDER BY "matchingScore" DESC LIMIT 20;
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT id FROM resumes
 WHERE to_tsvector('english', "extractedText") @@ plainto_tsquery('english', 'distributed systems');
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT j.id, 1 - (r.embedding <=> j.embedding) AS cosine_similarity
+FROM resumes r CROSS JOIN jobs j
+WHERE r.id='resume-id' AND j.status='OPEN' AND j.embedding IS NOT NULL
+ORDER BY r.embedding <=> j.embedding LIMIT 10;
 ```
 
 Expected index candidates are `idx_jobs_open_recent`, `idx_apps_candidate_date`, `idx_resume_matches_job_score`, and `idx_resume_text_search`. PostgreSQL may choose sequential scans on small tables; that is normal. Compare plans with realistic table sizes rather than forcing an index.
