@@ -1,5 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS citext;
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS users (
  id varchar(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -26,17 +27,20 @@ CREATE TABLE IF NOT EXISTS resumes (
  id varchar(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
  "candidateId" varchar(50) NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
  "fileName" varchar(255) NOT NULL, "fileUrl" varchar(500), version varchar(30),
- "uploadedAt" timestamptz NOT NULL DEFAULT now(), "extractedText" text NOT NULL DEFAULT '', "isDefault" boolean NOT NULL DEFAULT false
+ "uploadedAt" timestamptz NOT NULL DEFAULT now(), "extractedText" text NOT NULL DEFAULT '', "isDefault" boolean NOT NULL DEFAULT false,
+ embedding vector(384)
 );
+ALTER TABLE resumes ADD COLUMN IF NOT EXISTS embedding vector(384);
 CREATE TABLE IF NOT EXISTS jobs (
  id varchar(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
  "recruiterId" varchar(50) NOT NULL REFERENCES recruiters(id) ON DELETE CASCADE,
  title varchar(150) NOT NULL, description text NOT NULL, location varchar(100),
  "employmentType" varchar(50), status varchar(30) NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','PAUSED','CLOSED','DRAFT')),
  "postedAt" timestamptz NOT NULL DEFAULT now(), "closingDate" timestamptz,
- "salaryMin" integer, "salaryMax" integer, "workplaceType" varchar(30) DEFAULT 'ONSITE',
+ "salaryMin" integer, "salaryMax" integer, "workplaceType" varchar(30) DEFAULT 'ONSITE', embedding vector(384),
  CONSTRAINT valid_salary_range CHECK ("salaryMin" IS NULL OR "salaryMax" IS NULL OR "salaryMin" <= "salaryMax")
 );
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS embedding vector(384);
 CREATE TABLE IF NOT EXISTS skills (
  id varchar(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
  name varchar(100) UNIQUE NOT NULL, description text, "normalizedName" varchar(100) UNIQUE
@@ -71,8 +75,10 @@ CREATE TABLE IF NOT EXISTS resume_matches (
  "matchingScore" numeric(5,2) NOT NULL CHECK ("matchingScore" BETWEEN 0 AND 100),
  "matchedSkills" text[] NOT NULL DEFAULT '{}', "missingSkills" text[] NOT NULL DEFAULT '{}',
  "matchedAt" timestamptz NOT NULL DEFAULT now(), "scoreBreakdown" jsonb NOT NULL DEFAULT '{}'::jsonb,
+ "semanticScore" numeric(5,2) NOT NULL DEFAULT 0 CHECK ("semanticScore" BETWEEN 0 AND 100),
  UNIQUE("resumeId","jobId")
 );
+ALTER TABLE resume_matches ADD COLUMN IF NOT EXISTS "semanticScore" numeric(5,2) NOT NULL DEFAULT 0 CHECK ("semanticScore" BETWEEN 0 AND 100);
 CREATE TABLE IF NOT EXISTS interviews (
  id varchar(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
  "applicationId" varchar(50) NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -86,6 +92,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_recruiter_status ON jobs("recruiterId",statu
 CREATE INDEX IF NOT EXISTS idx_apps_candidate_date ON applications("candidateId","appliedAt" DESC);
 CREATE INDEX IF NOT EXISTS idx_apps_job_status ON applications("jobId",status);
 CREATE INDEX IF NOT EXISTS idx_resume_matches_job_score ON resume_matches("jobId","matchingScore" DESC);
+CREATE INDEX IF NOT EXISTS idx_resumes_embedding_hnsw ON resumes USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_jobs_embedding_hnsw ON jobs USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_interviews_schedule ON interviews("scheduledAt") WHERE status='SCHEDULED';
 CREATE INDEX IF NOT EXISTS idx_resume_text_search ON resumes USING gin (to_tsvector('english',"extractedText"));
 CREATE INDEX IF NOT EXISTS idx_job_text_search ON jobs USING gin (to_tsvector('english',title || ' ' || description));
@@ -105,4 +113,4 @@ CREATE OR REPLACE VIEW recruiter_job_pipeline AS
  count(a.id) FILTER (WHERE a.status IN ('SHORTLISTED','INTERVIEW','OFFERED','HIRED')) AS advanced
  FROM jobs j LEFT JOIN applications a ON a."jobId"=j.id GROUP BY j.id;
 
-COMMENT ON TABLE resume_matches IS 'Deterministic skill overlap score; scoreBreakdown stores auditable inputs. No protected attributes are considered.';
+COMMENT ON TABLE resume_matches IS 'Semantic vector similarity combined with explainable skill overlap; scoreBreakdown stores model, metric, weights, and inputs. No protected attributes are considered.';
